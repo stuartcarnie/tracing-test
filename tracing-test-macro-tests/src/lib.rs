@@ -7,7 +7,7 @@ mod tests {
     use tracing_test::traced_test;
 
     #[tokio::test]
-    #[traced_test]
+    #[traced_test(filter = "info")]
     async fn test_logs_are_captured() {
         // Local log
         info!("This is being logged on the info level");

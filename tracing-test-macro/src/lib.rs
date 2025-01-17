@@ -12,7 +12,8 @@ use std::sync::{Mutex, OnceLock};
 
 use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse, ItemFn, Stmt};
+use syn::{parse, ItemFn, LitStr, Stmt};
+use syn::parse::ParseStream;
 
 /// Registered scopes.
 ///
@@ -49,7 +50,9 @@ fn get_free_scope(mut test_fn_name: String) -> String {
 ///
 /// Check out the docs of the `tracing-test` crate for more usage information.
 #[proc_macro_attribute]
-pub fn traced_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn traced_test(args: TokenStream, item: TokenStream) -> TokenStream {
+    let args = syn::parse_macro_input!(args as TracedTestArgs);
+
     // Parse annotated function
     let mut function: ItemFn = parse(item).expect("Could not parse ItemFn");
 
@@ -62,12 +65,17 @@ pub fn traced_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     //       evaluated in the context of the calling crate, not of the macro
     //       crate!
     let no_env_filter = cfg!(feature = "no-env-filter");
+    let filter = args.filter
+        .map(|filter| quote! { Some(#filter) } )
+        .unwrap_or_else(|| quote! { None::<&'static str> });
 
     // Prepare code that should be injected at the start of the function
     let init = parse::<Stmt>(
         quote! {
             tracing_test::internal::INITIALIZED.call_once(|| {
-                let env_filter = if #no_env_filter {
+                let env_filter = if let Some(filter) = #filter {
+                    filter.to_string()
+                } else if #no_env_filter {
                     "trace".to_string()
                 } else {
                     let crate_name = module_path!()
@@ -135,6 +143,37 @@ pub fn traced_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate token stream
     TokenStream::from(function.to_token_stream())
+}
+
+#[derive(Default)]
+struct TracedTestArgs {
+    filter: Option<LitStr>,
+}
+
+impl parse::Parse for TracedTestArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut args = Self::default();
+        while !input.is_empty() {
+            let lookahead = input.lookahead1();
+            if lookahead.peek(kw::filter) {
+                if args.filter.is_some() {
+                    return Err(input.error("expected only a single `filter` argument"));
+                }
+                input.parse::<kw::filter>()?;
+                input.parse::<syn::Token![=]>()?;
+                let filter = input.parse::<LitStr>()?;
+                args.filter = Some(filter);
+            } else {
+                return Err(lookahead.error());
+            }
+        }
+
+        Ok(args)
+    }
+}
+
+mod kw {
+    syn::custom_keyword!(filter);
 }
 
 #[cfg(test)]
